@@ -1,0 +1,484 @@
+---
+title: "Prediction of customer churn situation"
+author: "Chukwuka Akibor"
+date: "5/19/2021"
+output: html_notebook
+---
+
+---
+title: "Telecomm Customer"
+output: html_notebook
+Group Members: Moyosore Bakare-Bolaji
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+#Installing and loading the package
+```{r}
+
+
+library(plyr)
+library(corrplot)
+library(ggplot2)
+library(gridExtra)
+library(ggthemes)
+library(caret)
+library(MASS)
+library(randomForest)
+library(party)
+
+```
+
+```{r  setup, include=FALSE}
+# set options for R markdown knitting
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(linewidth=80)
+```
+
+```{r}
+# set up line wrapping in MD knit output
+library(knitr)
+hook_output = knit_hooks$get("output")
+knit_hooks$set(output = function(x, options)
+{
+ # this hook is used only when the linewidth option is not NULL
+ if (!is.null(n <- options$linewidth))
+ {
+ x = knitr:::split_lines(x)
+ # any lines wider than n should be wrapped
+ if (any(nchar(x) > n))
+ x = strwrap(x, width = n)
+ x = paste(x, collapse = "\n")
+ }
+ hook_output(x, options)
+})
+```
+
+```{r}
+filePath <- "/Volumes/Seagate_Haykay/customer_churn_R"
+setwd(filePath)
+getwd()
+```
+
+#Reading the dataset file and checking the structure using str()
+```{r}
+
+Telco <- read.csv("Telco-Customer-Churn.csv")
+
+str(Telco)
+
+```
+
+
+#Check the number of missing values in each column
+```{r}
+sapply(Telco, function(x) sum(is.na(x)))
+```
+
+
+```{r}
+Telco <- Telco[complete.cases(Telco), ]
+head(Telco)
+```
+
+
+# We will change “No internet service” to “No” for six columns, they are: “OnlineSecurity”, “OnlineBackup”, “DeviceProtection”, “TechSupport”, “streamingTV”, “streamingMovies”.
+```{r}
+cols_recode1 <- c(10:15)
+for(i in 1:ncol(Telco[,cols_recode1])) {
+        Telco[,cols_recode1][,i] <- as.factor(mapvalues
+                                              (Telco[,cols_recode1][,i], from =c("No internet service"),to=c("No")))
+}
+
+```
+
+
+# We will change “No phone service” to “No” for column “MultipleLines”
+
+```{r}
+Telco$MultipleLines <- as.factor(mapvalues(Telco$MultipleLines, 
+                                           from=c("No phone service"),
+                                           to=c("No")))
+
+```
+
+
+#Since the minimum tenure is 1 month and maximum tenure is 72 months, we can group them into five tenure groups: “0–12 Month”, “12–24 Month”, “24–48 Months”, “48–60 Month”, “> 60 Month”
+
+```{r}
+min(Telco$tenure); max(Telco$tenure)
+
+group_tenure <- function(tenure){
+    if (tenure >= 0 & tenure <= 12){
+        return('0-12 Month')
+    }else if(tenure > 12 & tenure <= 24){
+        return('12-24 Month')
+    }else if (tenure > 24 & tenure <= 48){
+        return('24-48 Month')
+    }else if (tenure > 48 & tenure <=60){
+        return('48-60 Month')
+    }else if (tenure > 60){
+        return('> 60 Month')
+    }
+}
+Telco$tenure_group <- sapply(Telco$tenure,group_tenure)
+Telco$tenure_group <- as.factor(Telco$tenure_group)
+```
+
+
+# Change the values in column “SeniorCitizen” from 0 or 1 to “No” or “Yes”.
+
+```{r}
+head(Telco)
+Telco$SeniorCitizen <- as.factor(mapvalues(Telco$SeniorCitizen,
+                                      from=c("0","1"),
+                                      to=c("No", "Yes")))
+```
+
+
+
+#Removing the columns we do not require
+```{r}
+Telco$customerID <- NULL
+Telco$tenure <- NULL
+```
+
+
+# Exploratory data analysis and feature selection
+# Correlation between numeric variables
+
+
+```{r}
+head(Telco)
+numeric.var <- sapply(Telco, is.numeric)
+corr.matrix <- cor(Telco[,numeric.var])
+corrplot(corr.matrix, main="\n\nCorrelation Plot for Numerical Variables", method="number")
+```
+
+# The Monthly Charges and Total Charges are correlated. So one of them will be removed from the model. We remove Total Charges.
+
+```{r}
+Telco$TotalCharges <- NULL
+```
+
+
+#Bar plots of categorical variables
+
+```{r}
+
+p1 <- ggplot(Telco, aes(x=gender)) + ggtitle("Gender") + xlab("Gender") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p2 <- ggplot(Telco, aes(x=SeniorCitizen)) + ggtitle("Senior Citizen") + xlab("Senior Citizen") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p3 <- ggplot(Telco, aes(x=Partner)) + ggtitle("Partner") + xlab("Partner") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p4 <- ggplot(Telco, aes(x=Dependents)) + ggtitle("Dependents") + xlab("Dependents") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p1, p2, p3, p4, ncol=2)
+
+```
+
+
+```{r}
+
+p5 <- ggplot(Telco, aes(x=PhoneService)) + ggtitle("Phone Service") + xlab("Phone Service") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p6 <- ggplot(Telco, aes(x=MultipleLines)) + ggtitle("Multiple Lines") + xlab("Multiple Lines") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p7 <- ggplot(Telco, aes(x=InternetService)) + ggtitle("Internet Service") + xlab("Internet Service") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p8 <- ggplot(Telco, aes(x=OnlineSecurity)) + ggtitle("Online Security") + xlab("Online Security") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p5, p6, p7, p8, ncol=2)
+
+```
+
+
+```{r}
+
+p9 <- ggplot(Telco, aes(x=OnlineBackup)) + ggtitle("Online Backup") + xlab("Online Backup") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p10 <- ggplot(Telco, aes(x=DeviceProtection)) + ggtitle("Device Protection") + xlab("Device Protection") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p11 <- ggplot(Telco, aes(x=TechSupport)) + ggtitle("Tech Support") + xlab("Tech Support") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p12 <- ggplot(Telco, aes(x=StreamingTV)) + ggtitle("Streaming TV") + xlab("Streaming TV") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p9, p10, p11, p12, ncol=2)
+
+```
+
+
+```{r}
+
+p13 <- ggplot(Telco, aes(x=StreamingMovies)) + ggtitle("Streaming Movies") + xlab("Streaming Movies") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p14 <- ggplot(Telco, aes(x=Contract)) + ggtitle("Contract") + xlab("Contract") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p15 <- ggplot(Telco, aes(x=PaperlessBilling)) + ggtitle("Paperless Billing") + xlab("Paperless Billing") + 
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p16 <- ggplot(Telco, aes(x=PaymentMethod)) + ggtitle("Payment Method") + xlab("Payment Method") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+
+p17 <- ggplot(Telco, aes(x=tenure_group)) + ggtitle("Tenure Group") + xlab("Tenure Group") +
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.5) + ylab("Percentage") + coord_flip() + theme_minimal()
+grid.arrange(p13, p14, p15, p16, p17, ncol=2)
+
+```
+
+
+
+#### Logistic Regression ####
+
+#We will split the dataset into Train and Test dataset
+```{r}
+trn<- createDataPartition(Telco$Churn,p=0.7,list=FALSE)
+head(trn)
+set.seed(2017)
+training<- Telco[trn,]
+head(training)
+testing<- Telco[-trn,]
+head(testing)
+```
+
+Confirm the splitting is correct:
+```{r}
+dim(training); dim(testing)
+```
+
+#Now, we will try to fit the model within the glm() for logistic regression
+```{r}
+
+
+
+L_Model <- glm(as.factor(Churn) ~ .,family=binomial(link="logit"),data=training)
+print(summary(L_Model))
+```
+
+# Feature Analysis:
+
+# The top three most-relevant features include Contract, tenure_group and PaperlessBilling.
+
+#Analyzing the model further on few more features
+```{r}
+anova(L_Model, test="Chisq")
+```
+
+Analyzing the deviance table we can see the drop in deviance when adding each variable one at a time. Adding InternetService, Contract and tenure_group significantly reduces the residual deviance. The other variables such as PaymentMethod and Dependents seem to improve the model less even though they all have low p-values.
+
+
+```{r}
+L_Model
+```
+
+#Now we will evaluate the predictive ability of the Logistic Regression model
+```{r}
+
+testing$Churn <- as.character(testing$Churn)
+
+testing$Churn[testing$Churn=="No"] <- "0"
+
+testing$Churn[testing$Churn=="Yes"] <- "1"
+
+FitResult <- predict(L_Model,newdata=testing,type='response')
+
+FitResult <- ifelse(FitResult > 0.5,1,0)
+
+MisClassificationError <- mean(FitResult != testing$Churn)
+
+print(paste('Accuracy of Logistic Regression',1-MisClassificationError))
+
+```
+
+
+#Lets make a confusion matrix for the logistic regression performed above
+```{r}
+print("Logistic Regression Confusion Matrix"); table(testing$Churn, FitResult > 0.5)
+```
+
+
+# Odds Ratio
+One of the interesting performance measurements in logistic regression is Odds Ratio.Basically, Odds ratio is what the odds of an event is happening.
+
+```{r}
+exp(cbind(OR=coef(L_Model), confint(L_Model)))
+```
+
+
+
+#### Decision Tree ####
+
+#Creating a decision tree
+
+For illustration purpose, we are going to use only three variables for plotting Decision Trees, they are “Contract”, “tenure_group” and “PaperlessBilling”.
+```{r}
+str(training)
+training$Churn <- factor(training$Churn)
+training$Contract <- factor(training$Contract)
+training$PaperlessBilling <- factor(training$PaperlessBilling)
+
+ tree <- ctree(Churn~Contract+tenure_group+PaperlessBilling, training)
+```
+
+
+#Plotting the decision tree created above
+```{r}
+tree
+plot(tree)
+```
+
+1. Out of three variables we use, Contract is the most important variable to predict customer churn or not churn.
+
+2. If a customer in a one-year or two-year contract, no matter he (she) has PapelessBilling or not, he (she) is less likely to churn.
+
+3. On the other hand, if a customer is in a month-to-month contract, and in the tenure group of 0–12 month, and using PaperlessBilling, then this customer is more likely to churn.
+
+
+#Predicting the result and making a confusion matrix for decision tree
+```{r}
+tree
+testing
+str(testing)
+testing$Churn <- factor(testing$Churn)
+testing$Contract <- factor(testing$Contract)
+testing$PaperlessBilling <- factor(testing$PaperlessBilling)
+```
+
+```{r}
+
+pred_tree <- predict(tree, testing)
+
+print("Decision Tree Confusion Matrix"); table(Predicted = pred_tree, Actual = testing$Churn)
+
+```
+
+
+#Checking the accuracy of the decision tree
+```{r}
+pred1 <- predict(tree, training)
+#pred1
+
+table1 <- table(Predicted = pred1, Actual = training$Churn)
+#table1
+
+table2 <- table(Predicted = pred_tree, Actual = testing$Churn)
+#table2
+```
+
+#Printing the accuracy result
+```{r}
+
+print(paste('Accuracy of Decision Tree', sum(diag(table2))/sum(table2)))
+```
+
+
+#### Random Forest ####
+
+#Creating the initial model of Random forest
+```{r}
+set.seed(2017)
+
+Model_RF <- randomForest(Churn ~., data = training)
+
+print(Model_RF)
+```
+The error rate is relatively low when predicting “No”, and the error rate is much higher when predicting “Yes”.
+
+#Converting the 0 and 1 values to No and Yes respectively
+```{r}
+testing$Churn <- as.character(testing$Churn)
+
+testing$Churn[testing$Churn=="0"] <- "No"
+
+testing$Churn[testing$Churn=="1"] <- "Yes"
+
+class(testing$Churn)
+unique(testing$Churn)
+
+
+class(Pred_RF)
+unique(Pred_RF)
+```
+
+#Preforming prediction and confusion matrix
+```{r}
+Pred_RF <- predict(Model_RF, testing)
+# 
+# Pred_RF
+# 
+# test$Churn
+
+caret::confusionMatrix(Pred_RF, as.factor(testing$Churn))
+
+```
+
+#Finding the error rate for Random Forest model
+```{r}
+plot(Model_RF)
+```
+We use this plot to help us determine the number of trees. As the number of trees increases, the OOB error rate decreases, and then becomes almost constant. We are not able to decrease the OOB error rate after about 100 to 200 trees.
+
+#Tuning the Random Forest model
+```{r}
+t <- tuneRF(training[, -18], training[, 18], stepFactor = 0.5, plot = TRUE, ntreeTry = 200, trace = TRUE, improve = 0.05)
+```
+We use this plot to give us some ideas on the number of mtry to choose. OOB error rate is at the lowest when mtry is 2. Therefore, we choose mtry=2.
+
+
+#Again fitting the random forest model
+```{r}
+Model_RF_new <- randomForest(Churn ~., data = training, ntree = 200, mtry = 2, importance = TRUE, proximity = TRUE)
+
+print(Model_RF_new)
+```
+
+OOB error rate decreased to 21.53% from 21% . Figure 14
+
+
+# Random Forest Predictions and Confusion Matrix After Tuning
+
+```{r}
+class(testing$Churn)
+unique(testing$Churn)
+
+
+class(Pred_RF_new)
+unique(Pred_RF_new)
+```
+
+```{r}
+Pred_RF_new <- predict(Model_RF_new, testing)
+
+caret::confusionMatrix(Pred_RF_new, as.factor(testing$Churn))
+```
+
+Both accuracy and sensitivity are improved, compare with Figure 15.
+
+#Checking the importance of features of random forest
+```{r}
+
+varImpPlot(Model_RF_new, sort=T, n.var = 10, main = 'Top 10 Feature Importance')
+```
+
+Summary
+From the above example, we can see that Logistic Regression, Decision Tree and Random Forest can be used for customer churn analysis for this particular dataset equally fine.
+Throughout the analysis, I have learned several important things:
+Features such as tenure_group, Contract, PaperlessBilling, MonthlyCharges and InternetService appear to play a role in customer churn.
+There does not seem to be a relationship between gender and churn.
+Customers in a month-to-month contract, with PaperlessBilling and are within 12 months tenure, are more likely to churn; On the other hand, customers with one or two year contract, with longer than 12 months tenure, that are not using PaperlessBilling, are less likely to churn.
+
+
